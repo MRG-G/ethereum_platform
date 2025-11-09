@@ -1,10 +1,10 @@
 # bot.py
-import asyncio
-from datetime import datetime
-import logging
+import os
 import sqlite3
-import aiohttp
+import logging
+from datetime import datetime
 
+import aiohttp
 from telegram import (
     Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
     InlineKeyboardMarkup, InlineKeyboardButton
@@ -14,10 +14,17 @@ from telegram.ext import (
     ContextTypes, filters, CallbackQueryHandler
 )
 
-# ===================== CONFIG =====================
-TOKEN = "8298425629:AAGJzSFg_SHT_HjEPA1OTzJnXHRdPw51T10"  # <-- ВСТАВЬ СВОЙ ТОКЕН
-CHANNEL_USERNAME = "@ethereumamoperator"       # username канала/чата (с @) или числовой ID
-MERCHANT_USDT_ADDRESS = "0xYourUSDT_ERC20_Address_Here"  # <-- ВСТАВЬ СВОЙ USDT-ERC20 адрес
+# ===================== ENV / CONFIG =====================
+BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_YOUR_BOT_TOKEN")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@ethereumamoperator")  # @username или -100... id
+MERCHANT_USDT_ADDRESS = os.getenv("MERCHANT_USDT_ADDRESS", "0xYourUSDT_ERC20_Address_Here")
+
+# Webhook (Railway): например https://your-app.up.railway.app
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE", "").strip()   # если пусто -> Polling
+PORT = int(os.getenv("PORT", "8080"))
+LISTEN = "0.0.0.0"
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN.split(':')[0]}"   # секрет в пути
+
 FEE_RATE = 0.03
 ALLOWED_ASSETS = ("BTC", "ETH")
 
@@ -32,7 +39,11 @@ LANGUAGE, ACTION, PICK_ASSET, ENTER_AMOUNT, ENTER_WALLET, AWAITING_CHECK = range
 FALLBACK = {"BTC": 56000.0, "ETH": 3500.0, "USDAMD": 400.0}
 
 # ===================== TEXTS ======================
-language_map = {"🇷🇺 Русский": "Русский", "🇦🇲 Հայերեն": "Հայերեն", "🇬🇧 English": "English"}
+language_map = {
+    "🇷🇺 Русский": "Русский",
+    "🇦🇲 Հայերեն": "Հայերեն",
+    "🇬🇧 English": "English"
+}
 
 texts = {
     "Русский": {
@@ -94,7 +105,7 @@ texts = {
         "enter_amount_buy": "Մուտքագրեք {asset}-ի քանակը, որը ցանկանում եք գնել (օր. 0.01)։",
         "enter_amount_sell": "Մուտքագրեք {asset}-ի քանակը, որը ցանկանում եք վաճառել (օր. 0.01)։",
         "merchant_addr_title": "💳 Վճարման հասցե (USDT-ERC20):\n`{addr}`",
-        "enter_wallet": "Գրեք ձեր 💵 USDT-ERC20 հասցեն (սկսվում է 0x…)՝ վճարման համար:",
+        "enter_wallet": "Գրեք ձեր 💵 USDT-ERC20 վճարման հասցեն (սկսվում է 0x…):",
         "bad_wallet": "Սխալ հասցե․ պետք է սկսվի 0x-ով և լինի 42 նիշ։",
         "send_check": "Հիմա ուղարկեք միայն վճարման լուսանկար/սքրինշոթ։",
         "only_photo": "Այս փուլում ընդունվում է միայն լուսանկար/սքրինշոթ։",
@@ -218,7 +229,7 @@ async def fetch_json(url: str, timeout_sec: int = 8):
             return await r.json()
 
 async def get_rates_live() -> dict:
-    """Берёт свежие курсы: BTC/ETH в USDT (Binance) и USD→AMD."""
+    """Свежие курсы: BTC/ETH в USDT (Binance) и USD→AMD."""
     try:
         btc = await fetch_json("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
         eth = await fetch_json("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT")
@@ -264,8 +275,9 @@ async def send_lang_prompt(update_or_chat, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ===================== HANDLERS ====================
+pending = {}  # channel_msg_id -> request dict
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Приветствие БЕЗ курса. Курс покажем после выбора языка.
     kb = [["🇷🇺 Русский"], ["🇦🇲 Հայերեն"], ["🇬🇧 English"]]
     banner = texts["Русский"]["start"].format(brand=texts["Русский"]["brand"])
     m = await update.message.reply_text(
@@ -306,7 +318,6 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ACTION
 
 async def echo_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать курс ещё раз (при входе в покупку/продажу)."""
     lang = get_lang(context)
     rates = await get_rates_live()
     usd_amd = rates["USDAMD"]
@@ -318,7 +329,6 @@ async def echo_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             btc_amd=btc_amd, eth_amd=eth_amd
         )
     )
-    # сохраним для дальнейших расчётов
     context.user_data["rates_cache"] = rates
 
 async def action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -356,6 +366,15 @@ async def pick_asset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(texts[lang]["enter_amount_sell"].format(asset=asset))
     return ENTER_AMOUNT
 
+def _calc_parts(amount: float, price_usdt: float, usd_amd: float, is_buy: bool):
+    base = amount * price_usdt
+    fee = base * FEE_RATE
+    total = base + fee if is_buy else base - fee
+    return {
+        "base": base, "fee": fee, "total": total,
+        "base_amd": base * usd_amd, "fee_amd": fee * usd_amd, "total_amd": total * usd_amd
+    }
+
 async def enter_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(context)
     amount = parse_float(update.message.text or "")
@@ -370,45 +389,40 @@ async def enter_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["asset_amount"] = amount
     asset = context.user_data.get("asset", "BTC")
 
-    # Берём курс (из кэша, если есть; иначе — онлайн)
-    rates = context.user_data.get("rates_cache") or await get_rates_live()
+    rates = await get_rates_live()
     price_usdt = rates[asset]
     usd_amd = rates["USDAMD"]
 
-    base = amount * price_usdt
-    fee = base * FEE_RATE
-    base_amd = base * usd_amd
-    fee_amd = fee * usd_amd
+    is_buy = context.user_data.get("flow") == "buy"
+    parts = _calc_parts(amount, price_usdt, usd_amd, is_buy)
+    context.user_data["calc"] = {"price": price_usdt, **parts}
+    context.user_data["rates_cache"] = rates
 
-    if context.user_data.get("flow") == "buy":
-        total = base + fee
-        total_amd = base_amd + fee_amd
-        context.user_data["calc"] = {"base": base, "fee": fee, "total": total, "price": price_usdt}
+    if is_buy:
         await update.message.reply_text(
             texts[lang]["merchant_addr_title"].format(addr=MERCHANT_USDT_ADDRESS),
             parse_mode="Markdown"
         )
         await update.message.reply_text(
             texts[lang]["calc_buy"].format(
-                asset=asset, price=price_usdt, price_amd=fmt_amd(price_usdt*usd_amd),
-                base=base, base_amd=fmt_amd(base_amd),
-                fee=fee, fee_amd=fmt_amd(fee_amd),
-                total=total, total_amd=fmt_amd(total_amd)
+                asset=asset,
+                price=price_usdt, price_amd=fmt_amd(price_usdt*usd_amd),
+                base=parts["base"], base_amd=fmt_amd(parts["base_amd"]),
+                fee=parts["fee"], fee_amd=fmt_amd(parts["fee_amd"]),
+                total=parts["total"], total_amd=fmt_amd(parts["total_amd"])
             )
         )
         await update.message.reply_text(texts[lang]["send_check"])
         context.user_data["wallet"] = MERCHANT_USDT_ADDRESS
         return AWAITING_CHECK
     else:
-        total = base - fee
-        total_amd = base_amd - fee_amd
-        context.user_data["calc"] = {"base": base, "fee": fee, "total": total, "price": price_usdt}
         await update.message.reply_text(
             texts[lang]["calc_sell"].format(
-                asset=asset, price=price_usdt, price_amd=fmt_amd(price_usdt*usd_amd),
-                base=base, base_amd=fmt_amd(base_amd),
-                fee=fee, fee_amd=fmt_amd(fee_amd),
-                total=total, total_amd=fmt_amd(total_amd)
+                asset=asset,
+                price=price_usdt, price_amd=fmt_amd(price_usdt*usd_amd),
+                base=parts["base"], base_amd=fmt_amd(parts["base_amd"]),
+                fee=parts["fee"], fee_amd=fmt_amd(parts["fee_amd"]),
+                total=parts["total"], total_amd=fmt_amd(parts["total_amd"])
             )
         )
         await update.message.reply_text(texts[lang]["enter_wallet"])
@@ -444,7 +458,6 @@ async def receive_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or update.effective_user.first_name
     wallet = u.get("wallet")
 
-    # AMD числа для канала
     rates = u.get("rates_cache") or await get_rates_live()
     usd_amd = rates["USDAMD"]
     base_amd = fmt_amd(base * usd_amd)
@@ -471,7 +484,6 @@ async def receive_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = await context.bot.send_photo(chat_id=CHANNEL_USERNAME, photo=photo_id,
                                         caption=caption, reply_markup=keyboard)
 
-    # лог
     log_request({
         "ts": datetime.utcnow().isoformat(),
         "flow": flow, "asset": asset, "asset_amount": asset_amount,
@@ -502,7 +514,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = pdata["lang"]
     user_id = pdata["user_chat_id"]
 
-    # обновим лог
     log_request({
         "ts": datetime.utcnow().isoformat(),
         "flow": pdata["flow"], "asset": pdata["asset"], "asset_amount": pdata["asset_amount"],
@@ -524,15 +535,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "reject":
         await context.bot.send_message(chat_id=user_id, text=texts[lang]["auto_reject_user"])
-        # вернуть на выбор языка (сразу)
-        await send_lang_prompt(user_id, context)
+        await send_lang_prompt(user_id, context)  # вернуть к выбору языка сразу
         await query.edit_message_caption(caption=(query.message.caption or "") + "\n❌ Отклонено", reply_markup=None)
 
 # ===================== APP ========================
-def main():
-    init_sqlite()
-    app = Application.builder().token(TOKEN).build()
+def build_app() -> Application:
+    return Application.builder().token(BOT_TOKEN).build()
 
+def add_handlers(app: Application):
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -551,8 +561,25 @@ def main():
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("✅ Bot is running...")
-    app.run_polling()
+def main():
+    init_sqlite()
+    app = build_app()
+    add_handlers(app)
+
+    if WEBHOOK_BASE:
+        # WEBHOOK режим для Railway (24/7)
+        webhook_url = WEBHOOK_BASE.rstrip("/") + WEBHOOK_PATH
+        print(f"🚀 Webhook mode\nListen: {LISTEN}:{PORT}\nURL: {webhook_url}")
+        app.run_webhook(
+            listen=LISTEN,
+            port=PORT,
+            webhook_url=webhook_url,
+            drop_pending_updates=True,
+        )
+    else:
+        # Fallback: Polling (для локального запуска)
+        print("🟢 Polling mode")
+        app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
