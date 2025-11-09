@@ -1,3 +1,4 @@
+# bot.py
 import asyncio
 from datetime import datetime
 import logging
@@ -13,34 +14,30 @@ from telegram.ext import (
     ContextTypes, filters, CallbackQueryHandler
 )
 
-# ===================== CONFIG (заполни 3 строки) =====================
-TOKEN = "8298425629:AAGJzSFg_SHT_HjEPA1OTzJnXHRdPw51T10"
-CHANNEL_USERNAME = "@ethereumamoperator"      # username канала/чата (с @) или числовой ID
-MERCHANT_USDT_ADDRESS = "0xYourUSDT_ERC20_Address_Here"  # Твой USDT-ERC20 адрес
-# ====================================================================
-
+# ===================== CONFIG =====================
+TOKEN = "8298425629:AAGJzSFg_SHT_HjEPA1OTzJnXHRdPw51T10"  # <-- ВСТАВЬ СВОЙ ТОКЕН
+CHANNEL_USERNAME = "@ethereumamoperator"       # username канала/чата (с @) или числовой ID
+MERCHANT_USDT_ADDRESS = "0xYourUSDT_ERC20_Address_Here"  # <-- ВСТАВЬ СВОЙ USDT-ERC20 адрес
 FEE_RATE = 0.03
 ALLOWED_ASSETS = ("BTC", "ETH")
 
-# ---- логирование
+# ===================== LOGGING ====================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ethereum_platform")
 
-# ---- состояния
+# ===================== STATES =====================
 LANGUAGE, ACTION, PICK_ASSET, ENTER_AMOUNT, ENTER_WALLET, AWAITING_CHECK = range(6)
 
-# ---- стартовые бэкап-цены (если сеть не ответит)
+# ===================== FALLBACK RATES =============
 FALLBACK = {"BTC": 56000.0, "ETH": 3500.0, "USDAMD": 400.0}
 
-# ---- языки и тексты
+# ===================== TEXTS ======================
 language_map = {"🇷🇺 Русский": "Русский", "🇦🇲 Հայերեն": "Հայերեն", "🇬🇧 English": "English"}
 
 texts = {
     "Русский": {
         "brand": "💎 Ethereum Платформа",
-        # на /start — без курса, только выбор языка
         "start": "🌐 {brand}\n\nВыберите язык / Խնդրում ենք ընտրել լեզուն / Please select a language:",
-        # после выбора языка — покажем курс
         "rates": "📊 Курс: BTC {btc_usdt:.2f} USDT ({btc_amd:,} AMD) | ETH {eth_usdt:.2f} USDT ({eth_amd:,} AMD)\n"
                  "💵 Расчёты: только USDT-ERC20\n"
                  "⚠️ Комиссия: 3% — при покупке добавляется, при продаже удерживается.",
@@ -51,7 +48,7 @@ texts = {
         "enter_amount_sell": "Введите количество {asset}, которое хотите продать (например 0.01):",
         "merchant_addr_title": "💳 Адрес для оплаты (USDT-ERC20):\n`{addr}`",
         "enter_wallet": "Укажите ваш 💵 USDT-ERC20 адрес для выплаты (начинается с 0x…):",
-        "bad_wallet": "Неверный адрес. Должен начинаться с 0x, длина 42 символа. (EIP-55 чек не обязателен)",
+        "bad_wallet": "Неверный адрес. Должен начинаться с 0x и быть длиной 42 символа.",
         "send_check": "Теперь отправьте только фото/скриншот чека. Текст не принимается.",
         "only_photo": "На этом шаге принимается только фото/скриншот чека.",
         "after_check_wait": "✅ Чек получен. Ваша заявка ждёт подтверждения оператора.",
@@ -175,9 +172,6 @@ texts = {
     }
 }
 
-# ===================== STORAGE =====================
-pending = {}  # channel_msg_id -> request dict
-
 # ===================== DB (SQLite) =================
 def init_sqlite():
     conn = sqlite3.connect("orders.db")
@@ -216,43 +210,29 @@ def log_request(row: dict):
     conn.commit()
     conn.close()
 
-# ===================== PRICES ======================
-async def fetch_binance(symbol: str) -> float:
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    timeout = aiohttp.ClientTimeout(total=6)
+# ===================== PRICES (real-time) ==========
+async def fetch_json(url: str, timeout_sec: int = 8):
+    timeout = aiohttp.ClientTimeout(total=timeout_sec)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         async with s.get(url) as r:
-            j = await r.json()
-            return float(j["price"])
+            return await r.json()
 
-async def fetch_usd_to_amd() -> float:
-    # свободный курс USD→AMD
-    url = "https://api.exchangerate.host/latest?base=USD&symbols=AMD"
-    timeout = aiohttp.ClientTimeout(total=6)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        async with s.get(url) as r:
-            j = await r.json()
-            return float(j["rates"]["AMD"])
-
-async def update_rates(bot_app: Application):
-    """Обновляет курсы и кладёт их в bot_data."""
+async def get_rates_live() -> dict:
+    """Берёт свежие курсы: BTC/ETH в USDT (Binance) и USD→AMD."""
     try:
-        btc = await fetch_binance("BTCUSDT")
-        eth = await fetch_binance("ETHUSDT")
-        usd_amd = await fetch_usd_to_amd()
-        bot_app.bot_data["rates"] = {"BTC": btc, "ETH": eth, "USDAMD": usd_amd}
+        btc = await fetch_json("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        eth = await fetch_json("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT")
+        fx = await fetch_json("https://api.exchangerate.host/latest?base=USD&symbols=AMD")
+        return {
+            "BTC": float(btc["price"]),
+            "ETH": float(eth["price"]),
+            "USDAMD": float(fx["rates"]["AMD"])
+        }
     except Exception as e:
-        logger.warning(f"Price update failed: {e}")
-        bot_app.bot_data["rates"] = FALLBACK.copy()
-
-def get_rates(context: ContextTypes.DEFAULT_TYPE):
-    rates = context.application.bot_data.get("rates")
-    if not rates:
-        rates = FALLBACK
-    return rates
+        logger.warning(f"Price fetch failed, using fallback. Error: {e}")
+        return FALLBACK.copy()
 
 def fmt_amd(x: float) -> str:
-    # красиво: разделитель тысяч пробелом, без десятых
     return f"{int(round(x)):,}".replace(",", " ")
 
 def parse_float(s: str):
@@ -270,21 +250,22 @@ def get_lang(context: ContextTypes.DEFAULT_TYPE) -> str:
 def valid_eth_addr(addr: str) -> bool:
     return isinstance(addr, str) and addr.startswith("0x") and len(addr) == 42
 
-# ===================== UI HELPERS ==================
 async def send_lang_prompt(update_or_chat, context: ContextTypes.DEFAULT_TYPE):
     kb = [["🇷🇺 Русский"], ["🇦🇲 Հայերեն"], ["🇬🇧 English"]]
-    msg = texts["Русский"]["lang_prompt"]
+    prompt = texts["Русский"]["lang_prompt"]
     if isinstance(update_or_chat, Update):
         await update_or_chat.effective_chat.send_message(
-            msg, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
+            prompt, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
         )
     else:
-        await context.bot.send_message(update_or_chat, msg,
-            reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True))
+        await context.bot.send_message(
+            chat_id=update_or_chat, text=prompt,
+            reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
+        )
 
 # ===================== HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Приветствие БЕЗ курса
+    # Приветствие БЕЗ курса. Курс покажем после выбора языка.
     kb = [["🇷🇺 Русский"], ["🇦🇲 Հայերեն"], ["🇬🇧 English"]]
     banner = texts["Русский"]["start"].format(brand=texts["Русский"]["brand"])
     m = await update.message.reply_text(
@@ -301,7 +282,7 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["lang"] = lang
     context.user_data["attempt"] = 0
 
-    # удаляем приветствие
+    # Удаляем приветствие
     try:
         mid = context.user_data.get("start_msg_id")
         if mid:
@@ -309,12 +290,11 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # показываем КУРС
-    rates = get_rates(context)
+    # Показать свежий курс
+    rates = await get_rates_live()
     usd_amd = rates["USDAMD"]
     btc_usdt, eth_usdt = rates["BTC"], rates["ETH"]
-    btc_amd = fmt_amd(btc_usdt * usd_amd)
-    eth_amd = fmt_amd(eth_usdt * usd_amd)
+    btc_amd, eth_amd = fmt_amd(btc_usdt * usd_amd), fmt_amd(eth_usdt * usd_amd)
 
     await update.message.reply_text(
         texts[lang]["rates"].format(
@@ -325,20 +305,35 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(texts[lang]["menu"], reply_markup=build_kb(lang))
     return ACTION
 
+async def echo_rates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать курс ещё раз (при входе в покупку/продажу)."""
+    lang = get_lang(context)
+    rates = await get_rates_live()
+    usd_amd = rates["USDAMD"]
+    btc_usdt, eth_usdt = rates["BTC"], rates["ETH"]
+    btc_amd, eth_amd = fmt_amd(btc_usdt * usd_amd), fmt_amd(eth_usdt * usd_amd)
+    await update.message.reply_text(
+        texts[lang]["rates"].format(
+            btc_usdt=btc_usdt, eth_usdt=eth_usdt,
+            btc_amd=btc_amd, eth_amd=eth_amd
+        )
+    )
+    # сохраним для дальнейших расчётов
+    context.user_data["rates_cache"] = rates
+
 async def action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(context)
     txt = (update.message.text or "").strip()
 
     if ("Купить" in txt) or ("Buy" in txt) or ("Գնել" in txt):
         context.user_data["flow"] = "buy"
-        # при входе в покупку — ещё раз показываем курс
-        await set_language_like_rates_echo(update, context)
+        await echo_rates(update, context)
         await update.message.reply_text(texts[lang]["pick_asset"], reply_markup=ReplyKeyboardRemove())
         return PICK_ASSET
 
     if ("Продать" in txt) or ("Sell" in txt) or ("Վաճառել" in txt):
         context.user_data["flow"] = "sell"
-        await set_language_like_rates_echo(update, context)
+        await echo_rates(update, context)
         await update.message.reply_text(texts[lang]["pick_asset"], reply_markup=ReplyKeyboardRemove())
         return PICK_ASSET
 
@@ -347,20 +342,6 @@ async def action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(texts[lang]["menu"], reply_markup=build_kb(lang))
     return ACTION
-
-async def set_language_like_rates_echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = get_lang(context)
-    rates = get_rates(context)
-    usd_amd = rates["USDAMD"]
-    btc_usdt, eth_usdt = rates["BTC"], rates["ETH"]
-    btc_amd = fmt_amd(btc_usdt * usd_amd)
-    eth_amd = fmt_amd(eth_usdt * usd_amd)
-    await update.message.reply_text(
-        texts[lang]["rates"].format(
-            btc_usdt=btc_usdt, eth_usdt=eth_usdt,
-            btc_amd=btc_amd, eth_amd=eth_amd
-        )
-    )
 
 async def pick_asset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(context)
@@ -389,8 +370,8 @@ async def enter_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["asset_amount"] = amount
     asset = context.user_data.get("asset", "BTC")
 
-    # текущие курсы
-    rates = get_rates(context)
+    # Берём курс (из кэша, если есть; иначе — онлайн)
+    rates = context.user_data.get("rates_cache") or await get_rates_live()
     price_usdt = rates[asset]
     usd_amd = rates["USDAMD"]
 
@@ -463,7 +444,8 @@ async def receive_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or update.effective_user.first_name
     wallet = u.get("wallet")
 
-    rates = get_rates(context)
+    # AMD числа для канала
+    rates = u.get("rates_cache") or await get_rates_live()
     usd_amd = rates["USDAMD"]
     base_amd = fmt_amd(base * usd_amd)
     fee_amd = fmt_amd(fee * usd_amd)
@@ -542,20 +524,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "reject":
         await context.bot.send_message(chat_id=user_id, text=texts[lang]["auto_reject_user"])
-        # сразу вернуть на выбор языка (без приветствия)
+        # вернуть на выбор языка (сразу)
         await send_lang_prompt(user_id, context)
         await query.edit_message_caption(caption=(query.message.caption or "") + "\n❌ Отклонено", reply_markup=None)
 
-# ===================== APP / JOBS ==================
-async def post_init(app: Application):
-    # первый апдейт
-    await update_rates(app)
-    # периодическое обновление через JobQueue (каждые 60 сек)
-    app.job_queue.run_repeating(lambda c: update_rates(app), interval=60, first=60)
-
+# ===================== APP ========================
 def main():
     init_sqlite()
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    app = Application.builder().token(TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -580,4 +556,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
