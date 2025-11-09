@@ -95,17 +95,18 @@ async def enter_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             merchant_wallet = MERCHANT_USDT_ADDRESS
             
-        await update.message.reply_text(
-            texts[lang]["calc_sell"].format(
-                asset=asset,
-                price=price,
-                base=base,
-                fee=fee,
-                total=total,
-                merchant_wallet=merchant_wallet
-            ),
-            parse_mode="Markdown"
+        # Показываем расчет с адресом для отправки
+        message = (
+            f"Курс {asset}: {price:.4f} USDT\n"
+            f"Сумма: {base:.2f} USDT\n"
+            f"Комиссия (3%): {fee:.2f} USDT\n"
+            f"**К получению:** {total:.2f} USDT\n\n"
+            f"💎 Отправьте {asset} на адрес:\n"
+            f"`{merchant_wallet}`"
         )
+        await update.message.reply_text(message, parse_mode="Markdown")
+        
+        # Запрашиваем адрес пользователя для получения USDT
         await update.message.reply_text(texts[lang]["enter_wallet"])
         return ENTER_WALLET
 
@@ -125,22 +126,42 @@ async def enter_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if flow == "buy":
         # Показываем расчет с адресом пользователя для получения
-        await update.message.reply_text(
-            texts[lang]["calc_buy"].format(
-                asset=asset,
-                price=calc.get("price", 0),
-                base=calc.get("base", 0),
-                fee=calc.get("fee", 0),
-                total=calc.get("total", 0),
-                user_wallet=wallet
-            ),
-            parse_mode="Markdown"
+        message = (
+            f"Курс {asset}: {calc.get('price', 0):.4f} USDT\n"
+            f"Сумма: {calc.get('base', 0):.2f} USDT\n"
+            f"Комиссия (3%): {calc.get('fee', 0):.2f} USDT\n"
+            f"**Итого к оплате:** {calc.get('total', 0):.2f} USDT\n\n"
+            f"💎 Ваш адрес для получения {asset}:\n"
+            f"`{wallet}`"
         )
+        await update.message.reply_text(message, parse_mode="Markdown")
+        
         # Показываем адрес для оплаты USDT
         await update.message.reply_text(
             texts[lang]["merchant_addr_title"].format(addr=MERCHANT_USDT_ADDRESS),
             parse_mode="Markdown"
         )
+    else:  # flow == "sell"
+        # Получаем адрес мерчанта для выбранной криптовалюты
+        if asset == "BTC":
+            merchant_wallet = MERCHANT_BTC_ADDRESS
+        elif asset == "ETH":
+            merchant_wallet = MERCHANT_ETH_ADDRESS
+        else:
+            merchant_wallet = MERCHANT_USDT_ADDRESS
+
+        # Показываем расчет с адресом мерчанта для отправки
+        message = (
+            f"Курс {asset}: {calc.get('price', 0):.4f} USDT\n"
+            f"Сумма: {calc.get('base', 0):.2f} USDT\n"
+            f"Комиссия (3%): {calc.get('fee', 0):.2f} USDT\n"
+            f"**К получению:** {calc.get('total', 0):.2f} USDT\n\n"
+            f"💎 Отправьте {asset} на адрес:\n"
+            f"`{merchant_wallet}`\n\n"
+            f"💵 Ваш адрес для получения USDT:\n"
+            f"`{wallet}`"
+        )
+        await update.message.reply_text(message, parse_mode="Markdown")
     
     await update.message.reply_text(texts[lang]["send_check"])
     from utils.states import AWAITING_CHECK
