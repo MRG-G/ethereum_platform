@@ -45,8 +45,23 @@ async def button_callback(update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_caption(caption=new_caption, reply_markup=None)
 
     elif q.data == "reject":
+        from telegram import ReplyKeyboardMarkup
+        
+        # Отправляем сообщение об отказе
         await context.bot.send_message(chat_id=user_id, text=texts[lang]["auto_reject_user"])
-        # Вернуть к выбору языка (универсальная подсказка содержит запрос языка)
-        await context.bot.send_message(chat_id=user_id, text=texts["Русский"]["start_greet"])
+        
+        # Показываем меню выбора языка с клавиатурой
+        keyboard = ReplyKeyboardMarkup(
+            texts["Русский"]["lang_keyboard"],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=texts["Русский"]["start_greet"],
+            reply_markup=keyboard
+        )
+        
+        # Обновляем статус заявки в канале
         new_caption = (q.message.caption or "") + "\n❌ Отклонено"
         await q.edit_message_caption(caption=new_caption, reply_markup=None)
