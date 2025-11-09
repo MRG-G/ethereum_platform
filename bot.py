@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 # ===================== ENV / CONFIG =====================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_YOUR_BOT_TOKEN")
+BOT_TOKEN = os.getenv("8298425629:AAGJzSFg_SHT_HjEPA1OTzJnXHRdPw51T10")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@ethereumamoperator")  # @username или -100... id
 MERCHANT_USDT_ADDRESS = os.getenv("MERCHANT_USDT_ADDRESS", "0xYourUSDT_ERC20_Address_Here")
 
@@ -583,3 +583,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
