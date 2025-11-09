@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 # ===================== CONFIG (заполни 3 строки) =====================
-TOKEN = "PASTE_YOUR_BOT_TOKEN"
+TOKEN = "8298425629:AAGJzSFg_SHT_HjEPA1OTzJnXHRdPw51T10"
 CHANNEL_USERNAME = "@ethereumamoperator"      # username канала/чата (с @) или числовой ID
 MERCHANT_USDT_ADDRESS = "0xYourUSDT_ERC20_Address_Here"  # Твой USDT-ERC20 адрес
 # ====================================================================
@@ -580,3 +580,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
